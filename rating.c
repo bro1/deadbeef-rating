@@ -1,4 +1,5 @@
 #include <deadbeef.h>
+#include <junklib.h>
 #include <string.h>
 #include <stdlib.h>
 
@@ -21,6 +22,27 @@ rating_start (void) {
 static int
 rating_stop (void) {
     return 0;
+}
+
+// Convert stars to POPM rating
+// As per Windows Media Player mapping
+// https://github.com/Alexey-Yakovenko/deadbeef/issues/1143
+int junk_id3v2_convert_stars_to_popm_rating(int stars) {
+
+  if (stars == 1) {
+    return 1;
+  } else if (stars == 2) {
+    return 64;
+  } else if (stars == 3) {
+    return 128;
+  } else if (stars == 4) {
+    return 196;
+  } else if (stars == 5) {
+    return 255;
+  }
+
+  // out of range - return 0 (unrated)
+  else return 0;
 }
 
 // Removes rating tag when rating == -1, otherwise sets specified rating.
@@ -59,10 +81,29 @@ rating_action_rate_helper (DB_plugin_action_t *action, int ctx, int rating)
     while (it) {
         if (deadbeef->pl_is_selected (it) || ctx == DDB_ACTION_CTX_NOWPLAYING) {
             if (rating == -1) {
-                deadbeef->pl_delete_meta(it, "rating");
+                deadbeef->pl_delete_meta(it, "popm_rating_raw");
+                deadbeef->pl_delete_meta(it, "popm_rating_raw_original");
+                deadbeef->pl_delete_meta(it, "popm_rating");
+                deadbeef->pl_delete_meta(it, "popm_owner");
             } else {
-                deadbeef->pl_set_meta_int(it, "rating", rating);
+                int popm_rating = junk_id3v2_convert_stars_to_popm_rating(rating);
+                deadbeef->pl_set_meta_int(it, "popm_rating_raw", popm_rating);
+                deadbeef->pl_set_meta_int(it, "popm_rating", rating);
+                char const *popm_owner = deadbeef->pl_find_meta (it, "popm_owner");
+                if (popm_owner == NULL) {
+                  deadbeef->pl_replace_meta (it, "popm_owner", "deadbeef");
+                }
             }
+
+            // Start - Refresh track info on screen
+            ddb_event_track_t *ev = (ddb_event_track_t *)deadbeef->event_alloc(DB_EV_TRACKINFOCHANGED);
+            ev->track = it;
+            if (ev->track) {
+                deadbeef->pl_item_ref(ev->track);
+            }
+            deadbeef->event_send((ddb_event_t *)ev, 0, 0);
+            // End - Refresh track info
+
             deadbeef->pl_lock ();
             const char *dec = deadbeef->pl_find_meta_raw (it, ":DECODER");
             char decoder_id[100];
@@ -95,16 +136,29 @@ rating_action_rate_helper (DB_plugin_action_t *action, int ctx, int rating)
         }
         DB_playItem_t *next = deadbeef->pl_get_next (it, PL_MAIN);
         deadbeef->pl_item_unref (it);
+
         it = next;
     }
+
     if (plt) {
         deadbeef->plt_modified (plt);
     }
 
 out:
     if (it) {
+
+        if (num == 1 && (rating == 1 || rating == 2)) {
+
+          // If rating was a low rating - play a random song
+          ddb_event_track_t *ev = (ddb_event_track_t *)deadbeef->event_alloc(DB_EV_PLAY_RANDOM);
+          deadbeef->event_send((ddb_event_t *)ev, 0, 0);
+        }
+
         deadbeef->pl_item_unref (it);
     }
+
+
+
     return 0;
 }
 
